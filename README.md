@@ -1,4 +1,4 @@
-# AWS Cloud Security Posture Management (CSPM) 🛡️
+# 🚀 AWS Cloud Security Posture Management (CSPM) 🛡️
 
 [![Terraform](https://img.shields.io/badge/Terraform-1.0+-623CE4?logo=terraform)](https://www.terraform.io/)
 [![AWS](https://img.shields.io/badge/AWS-Security-FF9900?logo=amazon-aws)](https://aws.amazon.com/)
