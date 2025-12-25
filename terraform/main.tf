@@ -1,3 +1,8 @@
+# ==================== Data Sources ====================
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
 # ==================== Security Hub ====================
 resource "aws_securityhub_account" "main" {}
 
@@ -18,28 +23,27 @@ resource "aws_securityhub_standards_subscription" "pci_dss" {
 
 # ==================== GuardDuty ====================
 resource "aws_guardduty_detector" "main" {
-  count  = var.enable_guardduty ? 1 : 0
-  enable = true
-
-  datasources {
-    s3_logs {
-      enable = true
-    }
-    kubernetes {
-      audit_logs {
-        enable = true
-      }
-    }
-    malware_protection {
-      scan_ec2_instance_with_findings {
-        ebs_volumes {
-          enable = true
-        }
-      }
-    }
-  }
-
+  count                        = var.enable_guardduty ? 1 : 0
+  enable                       = true
   finding_publishing_frequency = "FIFTEEN_MINUTES"
+}
+
+resource "aws_guardduty_detector_feature" "s3_protection" {
+  detector_id = aws_guardduty_detector.main[0].id
+  name        = "S3_DATA_EVENTS"
+  status      = "ENABLED"
+}
+
+resource "aws_guardduty_detector_feature" "eks_protection" {
+  detector_id = aws_guardduty_detector.main[0].id
+  name        = "EKS_AUDIT_LOGS"
+  status      = "ENABLED"
+}
+
+resource "aws_guardduty_detector_feature" "ebs_protection" {
+  detector_id = aws_guardduty_detector.main[0].id
+  name        = "EBS_MALWARE_PROTECTION"
+  status      = "ENABLED"
 }
 
 resource "aws_guardduty_publishing_destination" "main" {
@@ -716,7 +720,7 @@ resource "aws_cloudwatch_log_group" "lambda_auto_remediation" {
 resource "aws_sqs_queue" "lambda_dlq" {
   name                      = "auto-remediation-dlq"
   message_retention_seconds = 1209600 # 14 days
-  
+
   kms_master_key_id = "alias/aws/sqs"
 }
 
@@ -774,8 +778,3 @@ resource "aws_cloudwatch_metric_alarm" "high_severity_findings" {
     SeverityLabel = "CRITICAL"
   }
 }
-
-# ==================== Data Sources ====================
-data "aws_caller_identity" "current" {}
-
-data "aws_region" "current" {}
