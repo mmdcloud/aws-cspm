@@ -1,9 +1,13 @@
-# ==================== Data Sources ====================
+# -----------------------------------------------------------------------------------------
+# Data Sources
+# -----------------------------------------------------------------------------------------
 data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
-# ==================== Security Hub ====================
+# -----------------------------------------------------------------------------------------
+# Security Hub
+# -----------------------------------------------------------------------------------------
 resource "aws_securityhub_account" "main" {}
 
 resource "aws_securityhub_standards_subscription" "cis" {
@@ -21,7 +25,9 @@ resource "aws_securityhub_standards_subscription" "pci_dss" {
   standards_arn = "arn:aws:securityhub:${var.aws_region}::standards/pci-dss/v/3.2.1"
 }
 
-# ==================== GuardDuty ====================
+# -----------------------------------------------------------------------------------------
+# GuardDuty
+# -----------------------------------------------------------------------------------------
 resource "aws_guardduty_detector" "main" {
   count                        = var.enable_guardduty ? 1 : 0
   enable                       = true
@@ -55,7 +61,9 @@ resource "aws_guardduty_publishing_destination" "main" {
   depends_on = [aws_s3_bucket_policy.guardduty_findings]
 }
 
-# ==================== Inspector ====================
+# -----------------------------------------------------------------------------------------
+# Inspector
+# -----------------------------------------------------------------------------------------
 resource "aws_inspector2_enabler" "main" {
   count = var.enable_inspector ? 1 : 0
 
@@ -63,7 +71,9 @@ resource "aws_inspector2_enabler" "main" {
   resource_types = ["ECR", "EC2", "LAMBDA", "LAMBDA_CODE"]
 }
 
-# ==================== Macie ====================
+# -----------------------------------------------------------------------------------------
+# Macie
+# -----------------------------------------------------------------------------------------
 resource "aws_macie2_account" "main" {
   count                        = var.enable_macie ? 1 : 0
   finding_publishing_frequency = "FIFTEEN_MINUTES"
@@ -89,7 +99,9 @@ resource "aws_macie2_classification_job" "sensitive_data" {
   depends_on = [aws_macie2_account.main]
 }
 
-# ==================== IAM Access Analyzer ====================
+# -----------------------------------------------------------------------------------------
+# IAM Access Analyzer
+# -----------------------------------------------------------------------------------------
 resource "aws_accessanalyzer_analyzer" "main" {
   count         = var.enable_access_analyzer ? 1 : 0
   analyzer_name = "organization-analyzer"
@@ -100,7 +112,9 @@ resource "aws_accessanalyzer_analyzer" "main" {
   }
 }
 
-# ==================== AWS Config ====================
+# -----------------------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------------------
 resource "aws_config_configuration_recorder" "main" {
   count    = var.enable_config ? 1 : 0
   name     = "config-recorder"
@@ -116,7 +130,7 @@ resource "aws_config_delivery_channel" "main" {
   count          = var.enable_config ? 1 : 0
   name           = "config-delivery-channel"
   s3_bucket_name = aws_s3_bucket.config.bucket
-  sns_topic_arn  = aws_sns_topic.config_notifications.arn
+  sns_topic_arn  = module.config_notifications.arn
 
   depends_on = [aws_config_configuration_recorder.main]
 }
@@ -190,7 +204,9 @@ resource "aws_config_config_rule" "root_account_mfa_enabled" {
   depends_on = [aws_config_configuration_recorder.main]
 }
 
-# ==================== S3 Buckets ====================
+# -----------------------------------------------------------------------------------------
+# S3 Buckets
+# -----------------------------------------------------------------------------------------
 resource "aws_s3_bucket" "guardduty_findings" {
   bucket = "${var.environment}-guardduty-findings-${data.aws_caller_identity.current.account_id}"
 }
@@ -363,7 +379,9 @@ resource "aws_s3_bucket_public_access_block" "lambda_code" {
   restrict_public_buckets = true
 }
 
-# ==================== KMS Keys ====================
+# -----------------------------------------------------------------------------------------
+# KMS Keys
+# -----------------------------------------------------------------------------------------
 resource "aws_kms_key" "guardduty" {
   description             = "KMS key for GuardDuty findings"
   deletion_window_in_days = 30
@@ -407,20 +425,39 @@ resource "aws_kms_alias" "guardduty" {
   target_key_id = aws_kms_key.guardduty.key_id
 }
 
-# ==================== SNS Topics ====================
-resource "aws_sns_topic" "security_alerts" {
-  name              = "security-hub-alerts"
+# -----------------------------------------------------------------------------------------
+# SNS Topics and Subscriptions
+# -----------------------------------------------------------------------------------------
+module "security_alerts" {
+  source            = "./modules/sns"
+  topic_name        = "security-hub-alerts"
   kms_master_key_id = aws_kms_key.sns.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowEventBridgeToPublish"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action   = "SNS:Publish"
+        Resource = module.security_alerts.arn
+      }
+    ]
+  })
+  subscriptions = [
+    {
+      protocol = "email"
+      endpoint = var.notification_email
+    }
+  ]
 }
 
-resource "aws_sns_topic_subscription" "security_alerts_email" {
-  topic_arn = aws_sns_topic.security_alerts.arn
-  protocol  = "email"
-  endpoint  = var.notification_email
-}
-
-resource "aws_sns_topic" "config_notifications" {
-  name = "config-notifications"
+module "config_notifications" {
+  source        = "./modules/sns"
+  topic_name    = "config-notifications"
+  subscriptions = []
 }
 
 resource "aws_kms_key" "sns" {
@@ -456,7 +493,9 @@ resource "aws_kms_key" "sns" {
   })
 }
 
-# ==================== EventBridge Rules ====================
+# -----------------------------------------------------------------------------------------
+# EventBridge Rules
+# -----------------------------------------------------------------------------------------
 resource "aws_cloudwatch_event_rule" "security_hub_findings" {
   name        = "security-hub-findings"
   description = "Capture Security Hub findings for auto-remediation"
@@ -486,7 +525,7 @@ resource "aws_cloudwatch_event_target" "security_hub_to_lambda" {
 resource "aws_cloudwatch_event_target" "security_hub_to_sns" {
   rule      = aws_cloudwatch_event_rule.security_hub_findings.name
   target_id = "SendToSNS"
-  arn       = aws_sns_topic.security_alerts.arn
+  arn       = module.security_alerts.arn
 }
 
 resource "aws_cloudwatch_event_rule" "guardduty_findings" {
@@ -507,7 +546,9 @@ resource "aws_cloudwatch_event_target" "guardduty_to_lambda" {
   arn       = aws_lambda_function.auto_remediation.arn
 }
 
-# ==================== IAM Roles ====================
+# -----------------------------------------------------------------------------------------
+# IAM Roles
+# -----------------------------------------------------------------------------------------
 resource "aws_iam_role" "config" {
   count = var.enable_config ? 1 : 0
   name  = "AWSConfigRole"
@@ -557,113 +598,149 @@ resource "aws_iam_role_policy" "config_s3" {
         Action = [
           "sns:Publish"
         ]
-        Resource = aws_sns_topic.config_notifications.arn
+        Resource = module.config_notifications.arn
       }
     ]
   })
 }
 
-resource "aws_iam_role" "lambda_auto_remediation" {
-  name = "LambdaAutoRemediationRole"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        }
-      }
-    ]
-  })
+module "auto_remediation_lambda_role" {
+  source             = "./modules/iam"
+  role_name          = "LambdaAutoRemediationRole"
+  role_description   = "IAM role for auto-remediation lambda function"
+  policy_name        = "LambdaAutoRemediationPolicy"
+  policy_description = "IAM policy for auto-remediation lambda function"
+  assume_role_policy = <<EOF
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": "sts:AssumeRole",
+                "Principal": {
+                  "Service": "lambda.amazonaws.com"
+                },
+                "Effect": "Allow",
+                "Sid": ""
+            }
+        ]
+    }
+    EOF
+  policy             = <<EOF
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": [
+                  "logs:CreateLogGroup",
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents"
+                ],
+                "Resource": "arn:aws:logs:*:*:*",
+                "Effect": "Allow"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                  "ec2:StopInstances",
+                  "ec2:TerminateInstances",
+                  "ec2:ModifyInstanceAttribute",
+                  "ec2:DescribeSecurityGroups",
+                  "ec2:DescribeInstances",
+                  "ec2:RevokeSecurityGroupIngress",
+                  "ec2:AuthorizeSecurityGroupIngress",
+                  "ec2:CreateSnapshot",
+                  "ec2:CreateTags"
+              ],
+              "Resource": "*"
+            },
+            {
+                "Action": [
+                  "s3:PutBucketPublicAccessBlock",
+                  "s3:PutBucketPolicy",
+                  "s3:PutEncryptionConfiguration",
+                  "s3:PutBucketVersioning",
+                  "s3:GetBucketPolicy",
+                  "s3:GetBucketPublicAccessBlock",
+                  "s3:GetEncryptionConfiguration"
+                ],
+                "Effect": "Allow",
+                "Resource": "*"
+            },
+            {
+              "Action": [
+                "iam:DeleteAccessKey",
+                "iam:UpdateAccessKey",
+                "iam:ListAccessKeys",
+                "iam:AttachUserPolicy",
+                "iam:DetachUserPolicy"
+              ],
+              "Effect"   : "Allow",
+              "Resource" : "*"
+            },
+            {
+              "Action": [
+                "sns:Publish"
+              ],
+              "Effect"   : "Allow",
+              "Resource" : "${module.security_alerts.arn}"
+            },
+            {
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Effect"   : "Allow",
+              "Resource" : "*"
+            }
+        ]
+    }
+    EOF
 }
 
-resource "aws_iam_role_policy" "lambda_auto_remediation" {
-  name = "LambdaAutoRemediationPolicy"
-  role = aws_iam_role.lambda_auto_remediation.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "arn:aws:logs:*:*:*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:StopInstances",
-          "ec2:TerminateInstances",
-          "ec2:ModifyInstanceAttribute",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeInstances",
-          "ec2:RevokeSecurityGroupIngress",
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:CreateSnapshot",
-          "ec2:CreateTags"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutBucketPublicAccessBlock",
-          "s3:PutBucketPolicy",
-          "s3:PutEncryptionConfiguration",
-          "s3:PutBucketVersioning",
-          "s3:GetBucketPolicy",
-          "s3:GetBucketPublicAccessBlock",
-          "s3:GetEncryptionConfiguration"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "iam:DeleteAccessKey",
-          "iam:UpdateAccessKey",
-          "iam:ListAccessKeys",
-          "iam:AttachUserPolicy",
-          "iam:DetachUserPolicy"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "securityhub:UpdateFindings",
-          "securityhub:BatchUpdateFindings"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "sns:Publish"
-        ]
-        Resource = aws_sns_topic.security_alerts.arn
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:GenerateDataKey"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
+# -----------------------------------------------------------------------------------------
+# Lambda Functions
+# -----------------------------------------------------------------------------------------
+module "auto_remediation_function_code" {
+  source      = "./modules/s3"
+  bucket_name = "auto-remediation-function-code"
+  objects = [
+    {
+      key    = "lambda.zip"
+      source = "./files/lambda.zip"
+    }
+  ]
+  bucket_policy = ""
+  cors = [
+    {
+      allowed_headers = ["*"]
+      allowed_methods = ["GET"]
+      allowed_origins = ["*"]
+      max_age_seconds = 3000
+    }
+  ]
+  versioning_enabled = "Enabled"
+  force_destroy      = true
 }
 
-# ==================== Lambda Functions ====================
+module "auto_remediation" {
+  source        = "./modules/lambda"
+  function_name = "security-hub-auto-remediation"
+  role_arn      = module.auto_remediation_lambda_role.arn
+  permissions   = []
+  env_variables = {
+    AUTO_REMEDIATION_ENABLED = var.auto_remediation_enabled
+    SNS_TOPIC_ARN            = module.security_alerts.arn
+    ENVIRONMENT              = var.environment
+  }
+  handler                 = "index.lambda_handler"  
+  runtime                 = "python3.12"
+  s3_bucket               = module.auto_remediation_function_code.bucket
+  s3_key                  = "lambda.zip"
+  layers                  = []
+  # code_signing_config_arn = module.carshub_signing_profile.config_arn
+}
+
 resource "aws_lambda_function" "auto_remediation" {
   filename      = "lambda_auto_remediation.zip"
   function_name = "security-hub-auto-remediation"
@@ -676,13 +753,13 @@ resource "aws_lambda_function" "auto_remediation" {
   environment {
     variables = {
       AUTO_REMEDIATION_ENABLED = var.auto_remediation_enabled
-      SNS_TOPIC_ARN            = aws_sns_topic.security_alerts.arn
+      SNS_TOPIC_ARN            = module.security_alerts.arn
       ENVIRONMENT              = var.environment
     }
   }
 
   dead_letter_config {
-    target_arn = aws_sqs_queue.lambda_dlq.arn
+    target_arn = module.lambda_dlq.arn
   }
 
   tracing_config {
@@ -691,7 +768,7 @@ resource "aws_lambda_function" "auto_remediation" {
 
   depends_on = [
     aws_iam_role_policy.lambda_auto_remediation,
-    aws_cloudwatch_log_group.lambda_auto_remediation
+    module.lambda_auto_remediation
   ]
 }
 
@@ -712,40 +789,29 @@ resource "aws_lambda_permission" "allow_eventbridge_guardduty" {
   source_arn    = aws_cloudwatch_event_rule.guardduty_findings[0].arn
 }
 
-resource "aws_cloudwatch_log_group" "lambda_auto_remediation" {
-  name              = "/aws/lambda/security-hub-auto-remediation"
+module "lambda_auto_remediation_log_group" {
+  source            = "./modules/cloudwatch/cloudwatch-log-group"
+  log_group_name    = "/aws/lambda/security-hub-auto-remediation"
   retention_in_days = 30
 }
 
-resource "aws_sqs_queue" "lambda_dlq" {
-  name                      = "auto-remediation-dlq"
-  message_retention_seconds = 1209600 # 14 days
-
-  kms_master_key_id = "alias/aws/sqs"
+module "lambda_dlq" {
+  source                     = "./modules/sqs"
+  queue_name                 = "auto-remediation-dlq"
+  delay_seconds              = 0
+  max_message_size           = 262144
+  message_retention_seconds  = 1209600
+  visibility_timeout_seconds = 180
+  receive_wait_time_seconds  = 20
+  kms_master_key_id          = "alias/aws/sqs"
+  policy                     = ""
 }
 
-# ==================== SNS Policy ====================
-resource "aws_sns_topic_policy" "security_alerts" {
-  arn = aws_sns_topic.security_alerts.arn
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowEventBridgeToPublish"
-        Effect = "Allow"
-        Principal = {
-          Service = "events.amazonaws.com"
-        }
-        Action   = "SNS:Publish"
-        Resource = aws_sns_topic.security_alerts.arn
-      }
-    ]
-  })
-}
-
-# ==================== CloudWatch Alarms ====================
-resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+# -----------------------------------------------------------------------------------------
+# Cloudwatch Alarms
+# -----------------------------------------------------------------------------------------
+module "lambda_errors" {
+  source              = "./modules/cloudwatch/cloudwatch-alarm"
   alarm_name          = "auto-remediation-lambda-errors"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "1"
@@ -755,14 +821,15 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   statistic           = "Sum"
   threshold           = "5"
   alarm_description   = "This metric monitors lambda function errors"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
+  alarm_actions       = [module.security_alerts.arn]
 
   dimensions = {
     FunctionName = aws_lambda_function.auto_remediation.function_name
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "high_severity_findings" {
+module "high_severity_findings" {
+  source              = "./modules/cloudwatch/cloudwatch-alarm"
   alarm_name          = "high-severity-security-findings"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "1"
@@ -772,9 +839,27 @@ resource "aws_cloudwatch_metric_alarm" "high_severity_findings" {
   statistic           = "Sum"
   threshold           = "10"
   alarm_description   = "Alert on high number of critical/high severity findings"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
+  alarm_actions       = [module.security_alerts.arn]
 
   dimensions = {
     SeverityLabel = "CRITICAL"
+  }
+}
+
+module "guardduty_high_severity_findings" {
+  source              = "./modules/cloudwatch/cloudwatch-alarm"
+  alarm_name          = "guardduty-high-severity-findings"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "FindingCount"
+  namespace           = "AWS/GuardDuty"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "10"
+  alarm_description   = "Alert on high number of critical/high severity GuardDuty findings"
+  alarm_actions       = [module.security_alerts.arn]
+
+  dimensions = {
+    Severity = "8-10"
   }
 }
